@@ -1,0 +1,1799 @@
+PRODUCTION FIX, REGRESSION TEST & FINAL VERIFICATION
+
+Project: EndieFans / payload-delivery-bot
+
+TARGET ARTIFACT:
+SHA-256:
+98a8dfcea62c2cfcb39fe5e5330a8dfa9490a23a9a21c31051e330c388cbf5b0
+
+This is a production repair, regression-test, runtime verification, and final acceptance task.
+
+Do NOT rewrite the application architecture.
+Do NOT replace working subsystems with parallel implementations.
+Do NOT remove existing functionality.
+Do NOT weaken authorization/security.
+Do NOT fabricate test results, production results, Android results, screenshots, telemetry, or successful deliveries.
+
+Preserve the existing:
+
+- Storage architecture
+- canonical file/payload model
+- FJ authorization flow
+- HLS preparation flow
+- Package system
+- Website
+- Network Bot
+- Telegram lifecycle
+- Reward Points system
+- telemetry conventions
+- existing API contracts unless a concrete defect requires a compatible fix
+
+Every result must be classified as exactly one:
+
+AUTOMATED_TEST
+BROWSER_DEMO
+PRODUCTION_HTTP
+REAL_TELEGRAM_ANDROID
+
+Never promote one evidence class into another.
+
+Final acceptance requires real Telegram Android verification for relevant user-facing Telegram flows.
+
+If required Android evidence is unavailable:
+
+FINAL_ACCEPTANCE = NOT ACCEPTED
+
+
+============================================================
+A. START BY AUDITING THE ACTUAL ARTIFACT
+============================================================
+
+Before modifying anything, inspect the supplied artifact itself.
+
+Record:
+
+- SHA-256
+- byte size
+- number of files
+- number of directories
+- ZIP/CRC integrity
+- schema version
+- Python compile status
+- discovered test count
+- actual test runner count
+
+Do not copy test totals from an earlier report.
+
+Return:
+
+ARTIFACT_SHA256=
+ARTIFACT_SIZE=
+ARTIFACT_FILES=
+ARTIFACT_DIRECTORIES=
+SCHEMA_VERSION=
+ZIP_INTEGRITY=
+COMPILEALL=
+DISCOVERED_TESTS=
+
+
+============================================================
+B. P0 — REPAIR THE LIVE DATABASE SCHEMA SAFELY
+============================================================
+
+Production has reported:
+
+DATABASE_SCHEMA_VERSION=47
+
+while the physical database is missing v47 fields including:
+
+payloads.display_name_origin
+pending_deletions.last_error
+
+The migration system currently trusts the recorded version without confirming the physical schema.
+
+The pattern:
+
+if current < 47:
+    apply migration
+
+is insufficient when a database claims version 47 but is physically incomplete.
+
+Implement an idempotent schema-state repair mechanism.
+
+Requirements:
+
+1. Preserve the existing migration/versioning architecture.
+2. Do not reset the database version blindly.
+3. Do not drop/recreate production tables.
+4. Do not delete existing rows.
+5. Inspect required schema objects at startup.
+6. If the recorded version is 47 but required v47 columns/indexes are absent, repair them.
+7. Repairs must be additive and safe.
+8. Re-running repair must be harmless.
+9. Existing production data must remain intact.
+10. Startup must not proceed with a falsely complete schema.
+
+At minimum verify/repair all v47 additions, including:
+
+payloads.display_name_origin
+pending_deletions.attempts
+pending_deletions.last_error
+
+Also inspect every other v47 migration addition.
+
+Create regression tests for:
+
+- v46 -> v47
+- already-correct v47
+- v47 missing one column
+- v47 missing several columns
+- repeated startup
+- existing production data preserved
+
+Required:
+
+AUTOMATED_TEST = PASS
+
+Then prove the actual production database starts with the required physical schema.
+
+
+============================================================
+C. P0 — COMPLETE AUTO DELETE FOR EVERY NETWORK BOT DELIVERY
+============================================================
+
+The artifact contains deletion functionality, but the final Network Bot delivery path does not consistently invoke schedule_auto_delete().
+
+Fix this at the actual final-delivery boundary.
+
+Every user-facing Network Bot delivery must follow:
+
+successful delivery
+-> exact destination chat ID
+-> exact delivered Telegram message ID
+-> durable Auto Delete record
+-> persisted effective configuration
+-> scheduled deletion
+-> deletion attempt
+-> retry or terminal classification
+-> settlement
+
+Cover every applicable path:
+
+- single-file delivery
+- package delivery
+- Website-triggered delivery where applicable
+- alternate Network Bot delivery paths
+- retries
+- all user-facing copy/send paths
+
+Never schedule deletion before the user-facing delivery succeeds.
+
+Never schedule deletion against a relay/source message when the user-facing message is different.
+
+Emit:
+
+NETWORK_BOT_COPY_TO_USER_SUCCESS
+AUTO_DELETE_SCHEDULED
+AUTO_DELETE_ATTEMPT
+AUTO_DELETE_SETTLED
+
+For failures:
+
+AUTO_DELETE_RETRY
+AUTO_DELETE_GAVE_UP
+
+
+============================================================
+D. P0 — MAKE AUTO DELETE DURABLE AND IDEMPOTENT
+============================================================
+
+The deletion record must contain enough information to survive process restart.
+
+Verify persistent storage contains what is required, including:
+
+- destination_chat_id
+- delivered_message_id
+- Network Bot identity
+- scheduled_at
+- due_at
+- attempts
+- last_error
+- status
+- required provenance/reference information
+
+The pair:
+
+(destination_chat_id, delivered_message_id)
+
+must be idempotent.
+
+Scheduling the same delivered Telegram message twice must not create duplicate jobs.
+
+Test:
+
+- duplicate scheduling
+- duplicate delivery callback
+- delivery retry
+- process restart
+- worker restart
+- temporary Telegram deletion failure
+- eventual retry
+- permanent deletion failure
+
+
+============================================================
+E. P0 — REMOVE THE COMPETING LIFECYCLE DELETION PATH
+============================================================
+
+The current lifecycle cleanup contains a path equivalent to:
+
+due_pending_deletions()
+    -> _delete_message_safe()
+    -> remove_pending_deletion_by_id()
+
+This can remove a durable row after an unsuccessful deletion.
+
+Correct this.
+
+There must be one authoritative deletion execution path.
+
+Lifecycle worker must invoke the classified deletion executor.
+
+Success:
+- settle/remove according to established design.
+
+Temporary failure:
+- keep row
+- increment attempts
+- persist last_error
+- assign next retry time
+
+Permanent failure:
+- record terminal failure
+- emit AUTO_DELETE_GAVE_UP
+- finalize according to existing data model
+
+A failed attempt must never cause the pending record to disappear merely because an attempt occurred.
+
+Test:
+
+temporary failure -> row remains
+restart -> row remains recoverable
+next worker pass -> retry happens
+successful retry -> settled
+permanent failure -> terminal state recorded
+
+
+============================================================
+F. P0 — AUTO DELETE MUST WORK AFTER RESTART
+============================================================
+
+Do not depend on an in-memory timer.
+
+On startup, recover all incomplete/due deletion records.
+
+Recovery must reconstruct the correct Network Bot identity and delete the exact destination message.
+
+Do not silently fall back to the main bot if the Network Bot was the sender.
+
+Test:
+
+deliver message
+-> terminate process before deletion time
+-> restart
+-> deletion becomes due
+-> recovery executes
+-> Telegram message is deleted
+
+Required:
+
+AUTOMATED_TEST
+
+and where available:
+
+PRODUCTION_HTTP
+
+
+============================================================
+G. P0 — FIX DELIVERY CHANNEL / NETWORK BOT RACE
+============================================================
+
+Production showed:
+
+DELIVERY_SEND_FAILED
+Message_id_invalid
+
+followed by:
+
+DELIVERY_CHANNEL_MESSAGE_STALE
+
+and a self-healing fresh copy.
+
+Correct the lifecycle ordering.
+
+Required:
+
+Stage A:
+source -> Delivery Channel
+
+Stage B:
+Delivery Channel -> Network Bot -> user
+
+Stage C:
+only after dependent Stage-B operations complete:
+relay cleanup
+
+Do not delete a relay message while a copy operation still depends on it.
+
+Operations must remain idempotent.
+
+Test:
+
+- slow Stage B
+- early relay cleanup attempt
+- Message_id_invalid
+- stale relay recovery
+- retry
+- duplicate Stage-B callback
+- duplicate user-delivery prevention
+
+
+============================================================
+H. P0 — PERSIST NETWORK BOT IDENTITY
+============================================================
+
+A pending Auto Delete job must know which Network Bot identity is associated with the delivered message.
+
+Do not depend on whichever bot is globally configured after restart.
+
+Persist required identity/provenance.
+
+On restart:
+
+pending deletion
+-> correct Network Bot
+-> exact destination message
+-> deletion
+
+Never use wrong bot or delete unrelated messages.
+
+Never log tokens or credentials.
+
+
+============================================================
+I. P0 — FIX WIZARD FAILURE HANDLING
+============================================================
+
+Production showed:
+
+table payloads has no column named display_name_origin
+
+followed by:
+
+_WIZARD_FAILURE_INSTRUCTIONS undefined
+
+Fix runtime namespace/import/rebinding.
+
+Find authoritative definition of:
+
+_WIZARD_FAILURE_INSTRUCTIONS
+
+and ensure it is available in the exact runtime namespace used by the wizard failure path.
+
+Remove duplicate/shadowed definitions where appropriate.
+
+Test:
+
+- database failure
+- invalid bot
+- missing administrator permission
+- inaccessible channel
+- membership failure
+- Telegram temporary failure
+- retry
+- terminal failure
+
+No wizard failure may become a NameError.
+
+
+============================================================
+J. NETWORK BOT SETUP WIZARD
+============================================================
+
+Verify:
+
+1. Bot identity
+2. Add bot to channel
+3. Required administrator permissions
+4. Server verification
+5. Precise verification status
+6. Channel configuration
+7. Membership test
+8. Actionable failure message
+9. Telemetry
+10. Terminal success/failure state
+
+Test:
+
+- valid bot
+- invalid bot
+- bot not admin
+- missing permission
+- wrong channel
+- inaccessible channel
+- membership failure
+- Telegram temporary failure
+- retry
+- terminal failure
+
+No generic "Something went wrong" where a precise actionable reason exists.
+
+
+============================================================
+K. STORAGE MESSAGE 873 — REAL SOURCE VERIFICATION
+============================================================
+
+Production showed:
+
+message_id=873
+reason=not_indexed
+
+and reindex:
+
+outcome=missing
+
+This does not prove the Telegram source is invalid.
+
+Resolve the actual Telegram source.
+
+Determine:
+
+- whether message 873 exists
+- whether it contains supported media
+- Telegram file_unique_id
+- source metadata
+- local DB state
+- whether it is deleted
+- whether access failed
+- exact reason if it cannot be indexed
+
+Use explicit classifications:
+
+VALID_AND_INDEXED
+VALID_BUT_MISSING_INDEX
+NOT_FOUND_ON_TELEGRAM
+UNSUPPORTED_MEDIA
+DELETED_SOURCE
+ACCESS_FAILURE
+OTHER_EXPLICIT_REASON
+
+Never silently skip 873.
+
+If valid, prove:
+
+- Single
+- Package
+- Website
+- Delivery
+
+
+============================================================
+L. STORAGE MESSAGE 874
+============================================================
+
+Production showed message 874 eventually resolving to:
+
+file_pk=1174
+current
+canonical preserved
+duplicate by file_unique_id
+
+Perform complete end-to-end verification.
+
+Confirm:
+
+- Telegram source exists
+- file_unique_id correct
+- canonical identity correct
+- filename correct
+- payload usable
+- Single works
+- Package works
+- Website works
+- Network Bot delivery works
+
+DB reindex alone is insufficient.
+
+
+============================================================
+M. SAME MESSAGE + NEW MEDIA REPLACEMENT
+============================================================
+
+Test:
+
+same Telegram message ID
++
+new file_unique_id
+
+Existing canonical source must update correctly.
+
+Requirements:
+
+- current Telegram metadata authoritative
+- new media identity reflected
+- payload identity preserved
+- Package foreign keys remain valid
+- Website references remain valid
+- delivery references remain valid
+- replacement telemetry emitted
+- no orphan payload
+- stale media not silently retained
+
+Run a real replacement test, not only a synthetic DB fixture.
+
+
+============================================================
+N. FILENAME / DISPLAY-NAME PROPAGATION
+============================================================
+
+Verify:
+
+Telegram source metadata
+-> canonical Storage record
+-> payload display name
+-> Package
+-> Website
+-> Delivery
+
+Repair:
+
+payloads.display_name_origin
+
+Then test:
+
+old filename
+-> source metadata changes
+-> reindex
+-> canonical name updates
+-> Website sees correct name
+-> delivery sees correct name
+
+No stale filename where current Telegram metadata is authoritative.
+
+
+============================================================
+O. CANONICAL MAIN MINI APP LINKS
+============================================================
+
+All user-facing Mini App entry points must use:
+
+build_main_mini_app_link()
+
+and:
+
+MAIN_MINI_APP_BOT_USERNAME
+
+with configured Mini App path.
+
+Default may be:
+
+https://t.me/<bot_username>?startapp
+
+or configured named direct app.
+
+Do not expose arbitrary Worker URLs as user-facing Mini App links.
+
+Production showed a Network Bot menu button pointing to:
+
+https://shy-leaf-cac1.kyahuyaphirse.workers.dev/site
+
+Find and correct every similar user-facing occurrence.
+
+Audit:
+
+- bot menu
+- main menu
+- inline buttons
+- Website return links
+- delivery links
+- Package links
+- admin links
+- retry links
+
+Admin Panel must remain inside the same Main Mini App.
+
+Add automated URL inventory test that fails if a user-facing entry points directly to arbitrary Worker/site endpoint.
+
+
+============================================================
+P. WEBSITE ROUTE/API AUDIT
+============================================================
+
+Inventory every Website route/API.
+
+For each verify:
+
+- authentication
+- authorization
+- validation
+- source resolution
+- payload resolution
+- error mapping
+- HTTP status
+- telemetry
+- rate limiting
+- secret redaction
+- Android-responsive behavior
+
+Preserve:
+
+401 -> AUTH_EXPIRED
+403 -> ACCESS_DENIED
+404 -> MEDIA_NOT_FOUND
+429 -> NETWORK_INTERRUPTED
+500 engine error -> PLAYBACK_ERROR
+503 HLS preparation -> PREPARING
+network failure -> NETWORK_ERROR
+
+Do not display "Stream link expired" for unrelated server/HLS errors.
+
+Test every route.
+
+
+============================================================
+Q. WEBSITE 503 STATE
+============================================================
+
+Previous production evidence showed /site returning 503 while:
+
+WEBSITE_TOGGLE website_enabled=True
+
+and later returning 200.
+
+Determine whether outage was:
+
+- deliberate configuration
+- startup failure
+- health failure
+- deployment issue
+- another concrete cause
+
+Do not misclassify intentional Website disablement as HLS failure.
+
+Production state must remain observable and recoverable.
+
+Test:
+
+- enabled
+- disabled
+- restart
+- DB unavailable
+- Telegram unavailable
+- HLS unavailable
+
+
+============================================================
+R. FJ AUTHORIZATION CACHE
+============================================================
+
+Production already showed:
+
+107 FJ_AUTH_CACHE_HIT
+
+Preserve this architecture.
+
+Required:
+
+FJ verification
+-> short-lived authorization
+-> HLS access
+
+Do not perform Telegram membership sweep for every HLS segment.
+
+Verify:
+
+- cache miss
+- cache hit
+- expiry
+- invalidation
+- revoked membership
+- restored membership
+- concurrent HLS requests
+- no cross-user authorization leakage
+
+Authorization must remain bounded and secure.
+
+
+============================================================
+S. HLS PREPARATION
+============================================================
+
+Preserve asynchronous HLS preparation.
+
+Expected:
+
+play request
+-> preparation starts
+-> 503 hls_preparing when not ready
+-> retry/poll
+-> HLS ready
+-> master 200
+-> variant 200
+-> segment 200
+-> playback
+
+Do not return old 500 engine failure.
+Do not map legitimate preparation 503 to "expired".
+
+Verify:
+
+- preparation coalescing
+- no duplicate jobs
+- timeout
+- failure recovery
+- retry
+- authorization
+- cleanup
+
+
+============================================================
+T. REWARD POINTS BUTTON — P0 PRODUCTION BUG
+============================================================
+
+PRODUCTION USER ISSUE:
+
+Users are unable to use their Reward Points.
+
+The Reward Points action/button becomes stuck and provides no useful response.
+
+Treat this as a real production defect.
+
+Do NOT assume it is only a frontend visual issue.
+
+Trace the entire flow:
+
+Telegram Mini App
+-> Reward Points button
+-> frontend click/tap handler
+-> request/API
+-> authentication
+-> backend validation
+-> points balance
+-> reward eligibility
+-> transaction
+-> response
+-> UI state update
+-> success/error feedback
+
+Determine the exact root cause.
+
+
+------------------------------------------------------------
+T.1 — FRONTEND BUTTON AUDIT
+------------------------------------------------------------
+
+Verify:
+
+- button exists
+- button is enabled when appropriate
+- click/tap handler attached
+- handler executes
+- no JavaScript exception
+- no overlay intercepts click
+- no permanent disabled state
+- no permanent loading state
+- no duplicate event handlers
+- no unresolved Promise
+- no silently swallowed request
+- Telegram Android touch works
+- browser click/touch works
+
+Add safe telemetry:
+
+REWARD_POINTS_CLICK
+REWARD_POINTS_REQUEST_START
+REWARD_POINTS_REQUEST_SUCCESS
+REWARD_POINTS_REQUEST_FAILURE
+REWARD_POINTS_UI_RESET
+
+Never log secrets or sensitive user data.
+
+
+------------------------------------------------------------
+T.2 — API / BACKEND TRACE
+------------------------------------------------------------
+
+Identify the exact Reward Points endpoint.
+
+Verify:
+
+- route exists
+- method correct
+- authentication accepted
+- Telegram user/session correctly resolved
+- request payload correct
+- security requirements satisfied
+- rate limiting handled
+- backend does not hang
+- database query does not hang
+- transaction completes
+- response always returned
+
+Every failure must produce an actionable HTTP response.
+
+No endpoint may leave frontend waiting indefinitely.
+
+Add explicit timeout/error handling.
+
+
+------------------------------------------------------------
+T.3 — REWARD BALANCE / TRANSACTION SAFETY
+------------------------------------------------------------
+
+Verify:
+
+- balance read correctly
+- eligibility checked server-side
+- points cannot be spent twice from double taps
+- insufficient balance returns clear error
+- successful redemption atomic
+- failed redemption does not deduct points
+- DB transaction rolls back correctly
+- duplicate requests are idempotent where required
+- concurrent requests cannot produce negative/inconsistent balance
+
+Never trust client-provided balance.
+
+Server is authoritative.
+
+
+------------------------------------------------------------
+T.4 — LOADING / STUCK STATE
+------------------------------------------------------------
+
+Button must never remain permanently stuck.
+
+On click:
+
+1. Enter controlled loading state.
+2. Prevent accidental duplicate submissions.
+3. Send request.
+4. Handle success.
+5. Handle expected failure.
+6. Handle timeout.
+7. Restore usable state.
+
+Every terminal state must leave loading state:
+
+SUCCESS
+FAILURE
+TIMEOUT
+NETWORK_ERROR
+AUTH_EXPIRED
+RATE_LIMITED
+INSUFFICIENT_POINTS
+ALREADY_REDEEMED
+SERVER_ERROR
+VALIDATION_ERROR
+
+There must be no:
+
+click
+-> spinner
+-> nothing
+
+path.
+
+
+------------------------------------------------------------
+T.5 — USER-FACING ERROR HANDLING
+------------------------------------------------------------
+
+Never silently fail.
+
+AUTH_EXPIRED:
+-> reauthenticate/reopen authenticated state
+
+INSUFFICIENT_POINTS:
+-> show current balance and requirement
+
+NETWORK_ERROR:
+-> show retry
+
+429:
+-> temporary retry message
+
+500:
+-> safe server error + retry
+
+TIMEOUT:
+-> retry
+
+VALIDATION_ERROR:
+-> actionable validation message
+
+SUCCESS:
+-> update displayed reward balance/state immediately
+
+
+------------------------------------------------------------
+T.6 — TELEGRAM ANDROID VERIFICATION
+------------------------------------------------------------
+
+Use the real Telegram Android client.
+
+Required:
+
+1. Open Main Mini App.
+2. Navigate to Reward Points.
+3. Confirm displayed balance.
+4. Tap Reward Points button.
+5. Confirm tap received.
+6. Confirm request starts.
+7. Confirm loading state.
+8. Confirm request completes.
+9. Confirm success/failure UI.
+10. Confirm button returns usable.
+11. Reopen Mini App and repeat.
+12. Test Android back/navigation.
+13. Test rapid double tap.
+14. Test network interruption.
+15. Test expired authentication.
+16. Test insufficient points.
+17. Test successful redemption if valid reward exists.
+
+Capture genuine evidence.
+
+Evidence:
+
+REAL_TELEGRAM_ANDROID
+
+Browser testing cannot substitute for Android.
+
+
+------------------------------------------------------------
+T.7 — BROWSER REGRESSION
+------------------------------------------------------------
+
+Test Reward Points in browser.
+
+Verify:
+
+- click
+- loading
+- success
+- failure
+- timeout
+- retry
+- balance update
+- no permanent disabled state
+
+Evidence:
+
+BROWSER_DEMO
+
+
+------------------------------------------------------------
+T.8 — AUTOMATED REGRESSION
+------------------------------------------------------------
+
+Add tests for:
+
+1. Reward button handler exists.
+2. Click starts request.
+3. Success resets UI.
+4. API failure resets UI.
+5. Timeout resets UI.
+6. Network error resets UI.
+7. Auth expiration handled.
+8. Insufficient points handled.
+9. 429 handled.
+10. 500 handled.
+11. Duplicate clicks cannot double-spend.
+12. Successful transaction updates balance.
+13. Failed transaction does not deduct points.
+14. Concurrent redemption safe.
+15. Backend always returns terminal response.
+16. No Promise remains pending indefinitely.
+
+Required:
+
+AUTOMATED_TEST
+
+
+------------------------------------------------------------
+T.9 — PRODUCTION HTTP VERIFICATION
+------------------------------------------------------------
+
+Run actual Reward Points API against production.
+
+Record:
+
+- endpoint
+- method
+- result
+- status code
+- response
+- latency
+- telemetry
+- DB transaction result
+
+Test:
+
+- successful request
+- insufficient balance
+- invalid request
+- expired authentication
+- unauthorized request
+- rate limiting
+- server failure
+- duplicate request
+
+Required:
+
+PRODUCTION_HTTP
+
+
+------------------------------------------------------------
+T.10 — ROOT-CAUSE REQUIREMENT
+------------------------------------------------------------
+
+Do not report:
+
+"Reward button fixed"
+
+without identifying actual failure.
+
+Classify root cause:
+
+FRONTEND_EVENT
+FRONTEND_STATE
+API_REQUEST
+AUTHENTICATION
+BACKEND_ROUTE
+DATABASE
+TRANSACTION
+TELEGRAM_WEBAPP
+NETWORK
+RACE_CONDITION
+OTHER
+
+Return:
+
+OLD_BEHAVIOR:
+ROOT_CAUSE:
+CODE_FIX:
+REGRESSION_TEST:
+PRODUCTION_RESULT:
+ANDROID_RESULT:
+
+
+------------------------------------------------------------
+T.11 — REWARD POINT ACCEPTANCE
+------------------------------------------------------------
+
+Reward Points can be:
+
+VERIFIED
+
+only when:
+
+- automated regression passes
+- production API works
+- browser flow works
+- real Telegram Android button responds
+- successful action completes
+- failure states recover
+- button never remains stuck
+- transaction is correct
+- duplicate taps cannot double-spend
+- balance updates correctly
+
+If Android verification unavailable:
+
+REWARD_POINTS_STATUS = UNVERIFIED
+
+and:
+
+FINAL_ACCEPTANCE = NOT ACCEPTED
+
+
+============================================================
+U. REAL TELEGRAM ANDROID PLAYER VERIFICATION
+============================================================
+
+Required for final acceptance.
+
+Using real Telegram Android:
+
+1. Open bot.
+2. Enter Main Mini App.
+3. Open known valid media.
+4. Complete FJ.
+5. Start playback.
+6. Pause.
+7. Resume.
+8. Seek.
+9. Enter fullscreen.
+10. Confirm Website chrome disappears.
+11. Open quality controls.
+12. Switch to 360p.
+13. Confirm real 360p requests.
+14. Switch to 1080p.
+15. Confirm real 1080p requests.
+16. Open speed controls.
+17. Change to 1.5x.
+18. Confirm actual playback rate.
+19. Reach end.
+20. Confirm end screen.
+21. Press Replay.
+22. Confirm replay.
+23. If next Package part exists, press Next Part.
+24. Confirm correct next part.
+25. Close player.
+26. Reopen it.
+
+Capture genuine evidence.
+
+
+============================================================
+V. QUALITY SWITCHING
+============================================================
+
+Production logs showed real Android:
+
+360p
+then
+1080p
+
+with corresponding segment requests.
+
+Repeat after final changes.
+
+Quality menu must derive from real hls.levels.
+
+Verify:
+
+- only actual levels shown
+- currentTime preserved
+- actual level switch completed
+- selected quality reflects actual playback
+- no unnecessary player reload
+
+Required:
+
+REAL_TELEGRAM_ANDROID
+
+
+============================================================
+W. SPEED CONTROL — CURRENTLY UNVERIFIED
+============================================================
+
+No reliable speed-change event has been established.
+
+Verify:
+
+0.5x
+1x
+1.25x
+1.5x
+2x
+
+Confirm speed survives:
+
+- quality changes
+- seeking
+- normal playback
+
+Emit/verify:
+
+PLAYER_SPEED_CHANGE
+
+Source inspection/browser demo cannot mark this Android behavior verified.
+
+Required:
+
+REAL_TELEGRAM_ANDROID
+
+
+============================================================
+X. FULLSCREEN — CURRENTLY PARTIALLY PROVEN
+============================================================
+
+Existing evidence includes:
+
+fullscreen mode=fsfake
+
+This is insufficient for real Android fullscreen verification.
+
+Verify Telegram Android fullscreen removes:
+
+- Website header
+- Website navigation
+- footer
+- unrelated Mini App chrome
+
+Player must occupy usable viewport and controls remain functional.
+
+On exit:
+
+- Website UI returns
+- playback position remains intact
+
+Browser CSS demonstration is insufficient.
+
+Required:
+
+REAL_TELEGRAM_ANDROID
+
+
+============================================================
+Y. END SCREEN / REPLAY / NEXT PART
+============================================================
+
+Production showed:
+
+PLAYER_END_SCREEN next=1
+
+but did not establish:
+
+PLAYER_REPLAY
+
+or:
+
+PLAYER_NEXT_PART
+
+Therefore these remain unverified until tested.
+
+Verify:
+
+video reaches end
+-> end screen
+
+Replay:
+-> same part restarts
+
+Next Part:
+-> correct next Package part opens/plays
+
+During active playback:
+
+- no Next Part overlay
+- no premature end UI
+
+Test:
+
+- Package with next part
+- final Package part
+- Replay
+- failed next-part transition
+- network interruption
+
+
+============================================================
+Z. PLAYER LIFECYCLE
+============================================================
+
+Maintain idempotent lifecycle.
+
+For every lifecycle verify only one:
+
+PLAYER_DESTROY
+
+and one:
+
+PLAYER_CLOSE
+
+Test:
+
+- close button
+- Android back
+- fullscreen transitions
+- route changes
+- video end
+- rapid open/close
+- reopen
+
+
+============================================================
+AA. INVESTIGATE ALL PLAYER_STREAM_ERROR EVENTS
+============================================================
+
+Production showed five:
+
+PLAYER_STREAM_ERROR
+
+Correlate each with surrounding HTTP/player telemetry.
+
+Classify:
+
+- network
+- authorization
+- preparation
+- manifest
+- variant
+- segment
+- browser/media
+- navigation
+- unknown
+
+Do not assume they are old HLS 500 errors without evidence.
+
+No unexplained stream error should be marked harmless.
+
+
+============================================================
+AB. EXPLAIN EVERY NON-2XX PRODUCTION RESULT
+============================================================
+
+Production totals have included:
+
+200
+206
+503
+403
+429
+401
+
+Every non-2xx must have legitimate explanation.
+
+Verify:
+
+503 -> legitimate HLS preparation or known temporary service state
+429 -> expected rate limiting
+401 -> actual auth expiration/failure
+403 -> actual access denial
+
+No old false "stream expired" behavior.
+
+
+============================================================
+AC. PACKAGE DELIVERY + AUTO DELETE
+============================================================
+
+Test:
+
+- one-file Package
+- multi-file Package
+- missing Package part
+- duplicate source
+- source replacement
+- Package retry
+
+For every user-facing message:
+
+- exact destination chat ID
+- exact Telegram message ID
+- durable deletion record
+- correct due time
+- actual deletion
+- settlement
+
+No duplicate deletion jobs.
+
+
+============================================================
+AD. SINGLE DELIVERY + AUTO DELETE
+============================================================
+
+Verify:
+
+Storage
+-> payload
+-> delivery
+-> Network Bot
+-> user
+-> Auto Delete
+-> Telegram deletion
+
+Auto Delete must never delete Storage source or canonical payload.
+
+
+============================================================
+AE. PROTECT CANONICAL STORAGE DATA
+============================================================
+
+Auto Delete may delete only intended user-facing Telegram destination message.
+
+Never delete:
+
+- Storage source message
+- canonical payload
+- canonical file record
+- Package metadata
+- Website payload
+
+Add regression test for this boundary.
+
+
+============================================================
+AF. TELEMETRY AND SECRET SAFETY
+============================================================
+
+Critical operations must produce safe telemetry.
+
+Where appropriate include:
+
+- file_pk/payload identity
+- source message ID
+- destination chat ID
+- delivered message ID
+- operation
+- result
+- reason code
+
+Never log:
+
+- Telegram bot token
+- authentication secrets
+- private credentials
+- sensitive headers
+
+All secrets remain redacted.
+
+
+============================================================
+AG. RUN THE REAL TEST SUITE
+============================================================
+
+Do not trust previous claims such as:
+
+631/631
+644/644
+
+Discover and execute actual suite.
+
+Report:
+
+DISCOVERED=
+PASSED=
+FAILED=
+SKIPPED=
+ERRORS=
+
+Break down by:
+
+- FJ
+- Storage
+- replacement
+- Package
+- Network Bot
+- Auto Delete
+- Reward Points
+- Website
+- HLS
+- Player
+- Wizard
+- Mini App
+- schema
+- lifecycle
+
+Final number must come from actual runner.
+
+
+============================================================
+AH. PRODUCTION HTTP VERIFICATION
+============================================================
+
+Run complete production HTTP matrix.
+
+For each route:
+
+- route
+- method
+- expected behavior
+- actual behavior
+- HTTP status
+- relevant telemetry
+- result
+
+Do not manually enter PASS values.
+
+
+============================================================
+AI. BROWSER QA
+============================================================
+
+Run complete Website/browser golden path:
+
+- canonical Main Mini App entry
+- authentication
+- inventory
+- Reward Points
+- single playback
+- Package playback
+- HLS preparation
+- quality
+- speed
+- fullscreen
+- end screen
+- Replay
+- Next Part
+- errors/recovery
+- Android-sized responsive viewport
+
+Evidence:
+
+BROWSER_DEMO
+
+Browser cannot substitute for Telegram Android.
+
+
+============================================================
+AJ. REAL NETWORK BOT GOLDEN PATH
+============================================================
+
+Using a real test destination:
+
+Deliver a single file and Package.
+
+For each:
+
+delivery success
+-> destination/message IDs
+-> AUTO_DELETE_SCHEDULED
+-> process restart before deletion
+-> recovery
+-> actual Telegram deletion
+-> AUTO_DELETE_SETTLED
+
+Then deliberately exercise:
+
+temporary Telegram deletion failure
+-> retained durable row
+-> retry
+-> success
+
+and:
+
+permanent failure
+-> AUTO_DELETE_GAVE_UP
+
+
+============================================================
+AK. REAL 873 / 874 TESTS
+============================================================
+
+Do not substitute synthetic fixtures for actual source IDs.
+
+For 873 and 874 record:
+
+- source existence
+- file_unique_id
+- file_pk
+- canonical filename
+- replacement state
+- Package membership
+- Website availability
+- Single delivery
+- Network Bot delivery
+
+
+============================================================
+AL. USER-FACING URL AUDIT
+============================================================
+
+Search entire source tree for:
+
+workers.dev
+/site
+t.me/
+startapp
+Mini App URL construction
+
+Produce inventory.
+
+Worker/backend URLs may remain internal where appropriate, but must not be exposed as user-facing Main Mini App entry points.
+
+All user-facing entries must resolve through canonical Main Mini App.
+
+
+============================================================
+AM. STATIC RUNTIME AUDIT
+============================================================
+
+Search and review:
+
+- duplicate deletion implementations
+- duplicate wizard failure constants
+- undefined runtime names
+- unavailable imports
+- version-only migration assumptions
+- direct DB columns without migrations
+- every schedule_auto_delete() caller
+- every remove_pending_deletion() caller
+- every _delete_message_safe() caller
+- all Network Bot delivery functions
+- Delivery Channel cleanup
+- all user-facing Mini App URL construction
+- Reward Points button handlers
+- Reward Points API routes
+- Reward Points transaction functions
+- Reward Points loading/error state handlers
+
+Produce findings before finalizing.
+
+
+============================================================
+AN. REQUIRED FINAL REPORT
+============================================================
+
+Return:
+
+1. Artifact Identity
+2. Root Causes
+3. Files Changed
+4. Schema Repair
+5. Auto Delete
+6. Network Bot Delivery
+7. Delivery Channel Lifecycle
+8. Storage 873
+9. Storage 874
+10. Source Replacement
+11. Filename / Display Name
+12. Wizard
+13. FJ Cache
+14. HLS
+15. Website
+16. Main Mini App Links
+17. Reward Points
+18. Player
+19. Quality
+20. Speed
+21. Fullscreen
+22. End Screen
+23. Replay
+24. Next Part
+25. Automated Tests
+26. Production HTTP
+27. Browser Demo
+28. Real Telegram Android
+29. Remaining Unverified Items
+30. Final Acceptance
+
+For every feature:
+
+STATUS:
+VERIFIED / PARTIALLY VERIFIED / UNVERIFIED / FAILED
+
+EVIDENCE:
+AUTOMATED_TEST / BROWSER_DEMO / PRODUCTION_HTTP / REAL_TELEGRAM_ANDROID
+
+Never label source inspection as runtime verification.
+
+
+============================================================
+AO. FINAL ACCEPTANCE GATE
+============================================================
+
+FINAL_ACCEPTANCE may be:
+
+ACCEPTED
+
+only when all critical conditions are actually demonstrated:
+
+- physical database schema correct
+- Auto Delete connected to every applicable Network Bot final delivery
+- Auto Delete survives restart
+- deletion retry works
+- permanent failures classified
+- no deletion race remains
+- Network Bot identity survives restart
+- wizard failure handling works
+- 873 has conclusive real-source classification
+- 874 fully usable
+- replacement works
+- filename propagation works
+- canonical Mini App links correct
+- Website golden path works
+- FJ cache works
+- HLS works
+- quality switching works
+- speed works
+- true fullscreen works on Telegram Android
+- Replay works on Telegram Android
+- Next Part works on Telegram Android
+- Network Bot delivery works
+- Auto Delete works after real delivery
+- Reward Points button responds on Telegram Android
+- Reward Points success flow works
+- Reward Points failure flow recovers
+- Reward transaction is atomic
+- Reward transaction is idempotent
+- duplicate taps cannot double-spend
+- Reward balance updates correctly
+- automated tests pass
+- production HTTP checks pass
+- browser golden path passes
+- required real Telegram Android evidence exists
+
+If any required Android verification is missing:
+
+FINAL_ACCEPTANCE = NOT ACCEPTED
+
+Do not conceal gaps.
+Do not convert "not tested" into "pass".
+Do not convert "source code exists" into "runtime verified".
+
+
+============================================================
+AP. EXECUTION PRIORITY
+============================================================
+
+P0 — PRODUCTION BLOCKERS
+
+1. Physical schema repair
+2. Auto Delete integration into every Network Bot final delivery
+3. Durable Auto Delete recovery
+4. Lifecycle deletion race
+5. Network Bot identity persistence
+6. Wizard failure NameError
+7. Reward Points button stuck / no response
+
+
+P1 — DATA AND DELIVERY CORRECTNESS
+
+8. Delivery Channel cleanup ordering
+9. Real source resolution for 873
+10. Full verification of 874
+11. Same-message/new-media replacement
+12. Filename/display-name propagation
+13. Canonical Mini App links
+14. Reward Points backend/transaction correctness
+
+
+P2 — WEBSITE / PLAYER
+
+15. Complete Website route/API verification
+16. Speed control
+17. Android fullscreen
+18. Replay
+19. Next Part
+20. Stream-error classification
+
+
+P3 — FINAL EVIDENCE
+
+21. Complete automated suite
+22. Production HTTP matrix
+23. Browser QA
+24. Real Telegram Android golden path
+25. Final acceptance audit
+
+
+============================================================
+AQ. NON-NEGOTIABLE EXECUTION RULE
+============================================================
+
+Do not stop after modifying source code.
+
+For every defect:
+
+1. Identify root cause.
+2. Modify the minimum necessary code.
+3. Add regression coverage.
+4. Run the regression.
+5. Verify runtime behavior.
+6. Collect evidence.
+7. Classify evidence correctly.
+8. Report any remaining gap.
+
+A feature is "FIXED" only when:
+
+implementation exists
+AND
+regression coverage exists
+AND
+the relevant runtime verification passes.
+
+A feature is "VERIFIED" only when the required evidence class has actually been collected.
+
+If a test could not be executed, report:
+
+UNVERIFIED — TEST NOT RUN
+
+If runtime behavior could not be demonstrated, report:
+
+UNVERIFIED — RUNTIME EVIDENCE MISSING
+
+Never infer success from source inspection alone.
